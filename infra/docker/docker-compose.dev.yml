@@ -1,0 +1,310 @@
+version: "3.9"
+
+services:
+  # PostgreSQL 資料庫
+  db:
+    image: postgres:16-alpine
+    container_name: pm-ai-db
+    environment:
+      POSTGRES_DB: pm_ai
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: dev_password
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-scripts:/docker-entrypoint-initdb.d
+    networks:
+      - pm-ai-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Qdrant 向量資料庫
+  vectordb:
+    image: qdrant/qdrant:v1.7.0
+    container_name: pm-ai-vectordb
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      QDRANT__SERVICE__HTTP_PORT: 6333
+      QDRANT__SERVICE__GRPC_PORT: 6334
+    networks:
+      - pm-ai-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MinIO 物件儲存
+  minio:
+    image: minio/minio:latest
+    container_name: pm-ai-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: dev_user
+      MINIO_ROOT_PASSWORD: dev_password
+      MINIO_DEFAULT_BUCKETS: pm-ai-documents,pm-ai-reports,pm-ai-backups
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    networks:
+      - pm-ai-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis 快取
+  redis:
+    image: redis:7-alpine
+    container_name: pm-ai-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - pm-ai-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # FastAPI 後端服務
+  api:
+    build:
+      context: ../../apps/api
+      dockerfile: Dockerfile.dev
+    container_name: pm-ai-api
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:dev_password@db:5432/pm_ai
+      - REDIS_URL=redis://redis:6379/0
+      - VECTORDB_URL=http://vectordb:6333
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=dev_user
+      - MINIO_SECRET_KEY=dev_password
+      - OPENAI_BASE_URL=http://llm-gateway:8001/v1
+      - OPENAI_API_KEY=sk-local
+      - ENVIRONMENT=development
+      - LOG_LEVEL=DEBUG
+    volumes:
+      - ../../apps/api:/app
+      - /app/__pycache__
+    depends_on:
+      db:
+        condition: service_healthy
+      vectordb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - pm-ai-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Next.js 前端服務
+  web:
+    build:
+      context: ../../apps/web
+      dockerfile: Dockerfile.dev
+    container_name: pm-ai-web
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+      - NODE_ENV=development
+    volumes:
+      - ../../apps/web:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - api
+    networks:
+      - pm-ai-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # LLM Gateway 服務
+  llm-gateway:
+    build:
+      context: ../../services/llm_gateway
+      dockerfile: Dockerfile.dev
+    container_name: pm-ai-llm-gateway
+    ports:
+      - "8001:8001"
+    environment:
+      - MODEL_NAME=medgemma-7b
+      - MODEL_PATH=/models
+      - MAX_TOKENS=2048
+      - TEMPERATURE=0.7
+      - LOG_LEVEL=INFO
+    volumes:
+      - llm_models:/models
+      - ../../services/llm_gateway:/app
+    networks:
+      - pm-ai-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # RAG Indexer 服務
+  rag-indexer:
+    build:
+      context: ../../services/rag_indexer
+      dockerfile: Dockerfile.dev
+    container_name: pm-ai-rag-indexer
+    ports:
+      - "8002:8002"
+    environment:
+      - VECTORDB_URL=http://vectordb:6333
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=dev_user
+      - MINIO_SECRET_KEY=dev_password
+      - EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+      - CHUNK_SIZE=512
+      - CHUNK_OVERLAP=50
+    volumes:
+      - ../../services/rag_indexer:/app
+      - ../../data/seeds:/data/seeds
+    depends_on:
+      vectordb:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - pm-ai-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # KPI Daemon 服務
+  kpi-daemon:
+    build:
+      context: ../../services/kpi_daemon
+      dockerfile: Dockerfile.dev
+    container_name: pm-ai-kpi-daemon
+    ports:
+      - "8003:8003"
+    environment:
+      - DATABASE_URL=postgresql://postgres:dev_password@db:5432/pm_ai
+      - REDIS_URL=redis://redis:6379/0
+      - NOTIFICATION_WEBHOOK_URL=http://api:8000/api/notifications
+      - KPI_THRESHOLDS_FILE=/app/config/thresholds.json
+      - SCHEDULE_INTERVAL=3600
+    volumes:
+      - ../../services/kpi_daemon:/app
+      - ../../services/kpi_daemon/config:/app/config
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - pm-ai-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Prometheus 監控
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: pm-ai-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    networks:
+      - pm-ai-network
+
+  # Grafana 儀表板
+  grafana:
+    image: grafana/grafana:latest
+    container_name: pm-ai-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources
+    depends_on:
+      - prometheus
+    networks:
+      - pm-ai-network
+
+  # Nginx 反向代理
+  nginx:
+    image: nginx:alpine
+    container_name: pm-ai-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+      - ./ssl:/etc/nginx/ssl
+    depends_on:
+      - web
+      - api
+    networks:
+      - pm-ai-network
+
+volumes:
+  postgres_data:
+    driver: local
+  qdrant_data:
+    driver: local
+  minio_data:
+    driver: local
+  redis_data:
+    driver: local
+  llm_models:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+networks:
+  pm-ai-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

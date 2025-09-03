@@ -1,0 +1,787 @@
+openapi: 3.0.3
+info:
+  title: PM-AI 糖腎共病衛教照護系統 API
+  description: |
+    糖腎共病衛教照護系統（PM-AI）API 規格
+    
+    主要功能：
+    - QA 衛教機器人
+    - 護理對話記錄與報告生成
+    - KPI 追蹤與風險管理
+    - 變更控制與驗收流程
+    
+    安全要求：
+    - OIDC/OAuth2 身份驗證
+    - RBAC 權限控制
+    - 審計日誌記錄
+    - PHI 資料保護
+  version: 1.0.0
+  contact:
+    name: PM-AI Development Team
+    email: dev@pm-ai.com
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:8000
+    description: 開發環境
+  - url: https://api.pm-ai.com
+    description: 正式環境
+
+security:
+  - OAuth2: []
+  - BearerAuth: []
+
+paths:
+  # QA 衛教機器人相關 API
+  /api/qa/ask:
+    post:
+      tags:
+        - QA Bot
+      summary: 提問衛教問題
+      description: 向衛教機器人提問糖腎共病相關問題
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - question
+                - session_id
+              properties:
+                question:
+                  type: string
+                  description: 使用者問題
+                  example: "糖尿病患者如何控制血糖？"
+                session_id:
+                  type: string
+                  format: uuid
+                  description: 對話會話 ID
+                  example: "123e4567-e89b-12d3-a456-426614174000"
+                context:
+                  type: object
+                  description: 額外上下文資訊
+                  properties:
+                    patient_age:
+                      type: integer
+                      description: 病患年齡
+                    patient_condition:
+                      type: string
+                      description: 病患狀況
+      responses:
+        "200":
+          description: 成功回應
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  answer:
+                    type: string
+                    description: 機器人回答
+                    example: "糖尿病患者控制血糖的方法包括..."
+                  citations:
+                    type: array
+                    description: 引用來源
+                    items:
+                      type: object
+                      properties:
+                        doc_id:
+                          type: string
+                          description: 文件 ID
+                        title:
+                          type: string
+                          description: 文件標題
+                        url:
+                          type: string
+                          description: 文件連結
+                        relevance_score:
+                          type: number
+                          description: 相關性分數
+                  confidence:
+                    type: number
+                    description: 回答信心度 (0-1)
+                    example: 0.85
+                  response_time:
+                    type: number
+                    description: 回應時間 (毫秒)
+                    example: 1200
+        "400":
+          description: 請求參數錯誤
+        "401":
+          description: 未授權
+        "500":
+          description: 伺服器錯誤
+
+  /api/qa/feedback:
+    post:
+      tags:
+        - QA Bot
+      summary: 提交問答回饋
+      description: 使用者對機器人回答的回饋
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - session_id
+                - question_id
+                - rating
+              properties:
+                session_id:
+                  type: string
+                  format: uuid
+                question_id:
+                  type: string
+                rating:
+                  type: integer
+                  minimum: 1
+                  maximum: 5
+                  description: 評分 (1-5)
+                feedback:
+                  type: string
+                  description: 文字回饋
+      responses:
+        "200":
+          description: 回饋提交成功
+        "400":
+          description: 請求參數錯誤
+
+  # 對話記錄相關 API
+  /api/convo/sessions:
+    get:
+      tags:
+        - Conversation
+      summary: 取得對話會話列表
+      description: 取得使用者的對話會話列表
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, completed, archived]
+      responses:
+        "200":
+          description: 會話列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Session'
+                  total:
+                    type: integer
+                  page:
+                    type: integer
+                  limit:
+                    type: integer
+
+  /api/convo/sessions/{session_id}:
+    get:
+      tags:
+        - Conversation
+      summary: 取得對話會話詳情
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: 會話詳情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionDetail'
+        "404":
+          description: 會話不存在
+
+  /api/convo/sessions/{session_id}/events:
+    get:
+      tags:
+        - Conversation
+      summary: 取得對話事件列表
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+      responses:
+        "200":
+          description: 對話事件列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ConversationEvent'
+
+  # 報告生成相關 API
+  /api/report/generate:
+    post:
+      tags:
+        - Report
+      summary: 由對話生成護理報告
+      description: 根據對話會話生成結構化護理報告
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - session_id
+              properties:
+                session_id:
+                  type: string
+                  format: uuid
+                template_id:
+                  type: string
+                  description: 報告範本 ID
+                options:
+                  type: object
+                  properties:
+                    include_citations:
+                      type: boolean
+                      default: true
+                    format:
+                      type: string
+                      enum: [json, pdf, html]
+                      default: json
+      responses:
+        "200":
+          description: 報告生成成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  report_id:
+                    type: string
+                    format: uuid
+                  status:
+                    type: string
+                    enum: [generated, processing, failed]
+                  download_url:
+                    type: string
+                    description: 下載連結
+                  structured_data:
+                    type: object
+                    description: 結構化資料
+        "400":
+          description: 請求參數錯誤
+        "404":
+          description: 會話不存在
+
+  /api/report/{report_id}:
+    get:
+      tags:
+        - Report
+      summary: 取得報告詳情
+      parameters:
+        - name: report_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: 報告詳情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Report'
+        "404":
+          description: 報告不存在
+
+  /api/report/{report_id}/sign:
+    post:
+      tags:
+        - Report
+      summary: 簽署報告
+      description: 對報告進行數位簽署
+      parameters:
+        - name: report_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - signature
+              properties:
+                signature:
+                  type: string
+                  description: 數位簽章
+                comment:
+                  type: string
+                  description: 簽署備註
+      responses:
+        "200":
+          description: 簽署成功
+        "400":
+          description: 簽署失敗
+
+  # KPI 追蹤相關 API
+  /api/kpi/dashboard:
+    get:
+      tags:
+        - KPI
+      summary: 取得 KPI 儀表板資料
+      parameters:
+        - name: date_range
+          in: query
+          schema:
+            type: string
+            enum: [today, week, month, quarter]
+            default: today
+      responses:
+        "200":
+          description: KPI 儀表板資料
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  summary:
+                    type: object
+                    properties:
+                      total_sessions:
+                        type: integer
+                      avg_response_time:
+                        type: number
+                      user_satisfaction:
+                        type: number
+                      system_uptime:
+                        type: number
+                  trends:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        date:
+                          type: string
+                          format: date
+                        value:
+                          type: number
+                        metric:
+                          type: string
+
+  /api/kpi/risks:
+    get:
+      tags:
+        - KPI
+      summary: 取得風險警告
+      parameters:
+        - name: severity
+          in: query
+          schema:
+            type: string
+            enum: [high, medium, low]
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, resolved, acknowledged]
+      responses:
+        "200":
+          description: 風險警告列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  risks:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Risk'
+
+  /api/kpi/update:
+    post:
+      tags:
+        - KPI
+      summary: 更新 KPI 資料
+      description: 更新每日 KPI 資料
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - date
+                - metrics
+              properties:
+                date:
+                  type: string
+                  format: date
+                metrics:
+                  type: object
+                  additionalProperties:
+                    type: number
+      responses:
+        "200":
+          description: KPI 更新成功
+
+  # 變更控制相關 API
+  /api/change/requests:
+    get:
+      tags:
+        - Change Control
+      summary: 取得變更請求列表
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, approved, rejected, in_progress, completed]
+        - name: priority
+          in: query
+          schema:
+            type: string
+            enum: [high, medium, low]
+      responses:
+        "200":
+          description: 變更請求列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  requests:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ChangeRequest'
+
+  /api/change/requests:
+    post:
+      tags:
+        - Change Control
+      summary: 提交變更請求
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - title
+                - description
+                - change_type
+              properties:
+                title:
+                  type: string
+                description:
+                  type: string
+                change_type:
+                  type: string
+                  enum: [feature, bugfix, enhancement, infrastructure]
+                priority:
+                  type: string
+                  enum: [high, medium, low]
+                impact_analysis:
+                  type: object
+                risk_assessment:
+                  type: object
+      responses:
+        "201":
+          description: 變更請求已提交
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  request_id:
+                    type: string
+                    format: uuid
+                  status:
+                    type: string
+                    enum: [pending, approved, rejected]
+
+  /api/change/requests/{request_id}/review:
+    post:
+      tags:
+        - Change Control
+      summary: 審查變更請求
+      parameters:
+        - name: request_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - decision
+              properties:
+                decision:
+                  type: string
+                  enum: [approve, reject, request_info]
+                comments:
+                  type: string
+                conditions:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        "200":
+          description: 審查完成
+
+  # 健康檢查 API
+  /health:
+    get:
+      tags:
+        - System
+      summary: 系統健康檢查
+      responses:
+        "200":
+          description: 系統正常
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [healthy, unhealthy]
+                  timestamp:
+                    type: string
+                    format: date-time
+                  services:
+                    type: object
+                    properties:
+                      database:
+                        type: string
+                        enum: [up, down]
+                      vector_db:
+                        type: string
+                        enum: [up, down]
+                      llm_service:
+                        type: string
+                        enum: [up, down]
+
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://idp.example.com/oauth/authorize
+          tokenUrl: https://idp.example.com/oauth/token
+          scopes:
+            read: 讀取權限
+            write: 寫入權限
+            admin: 管理權限
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    Session:
+      type: object
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        patient_ref:
+          type: string
+        status:
+          type: string
+          enum: [active, completed, archived]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        message_count:
+          type: integer
+
+    SessionDetail:
+      allOf:
+        - $ref: '#/components/schemas/Session'
+        - type: object
+          properties:
+            events:
+              type: array
+              items:
+                $ref: '#/components/schemas/ConversationEvent'
+
+    ConversationEvent:
+      type: object
+      properties:
+        event_id:
+          type: integer
+        session_id:
+          type: string
+          format: uuid
+        role:
+          type: string
+          enum: [nurse, patient, bot]
+        content:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        metadata:
+          type: object
+
+    Report:
+      type: object
+      properties:
+        report_id:
+          type: string
+          format: uuid
+        session_id:
+          type: string
+          format: uuid
+        patient_ref:
+          type: string
+        summary:
+          type: string
+        structured_json:
+          type: object
+        status:
+          type: string
+          enum: [draft, signed, archived]
+        created_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        signed_at:
+          type: string
+          format: date-time
+        download_url:
+          type: string
+
+    Risk:
+      type: object
+      properties:
+        risk_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        description:
+          type: string
+        severity:
+          type: string
+          enum: [high, medium, low]
+        status:
+          type: string
+          enum: [active, resolved, acknowledged]
+        detected_at:
+          type: string
+          format: date-time
+        resolved_at:
+          type: string
+          format: date-time
+        affected_metrics:
+          type: array
+          items:
+            type: string
+
+    ChangeRequest:
+      type: object
+      properties:
+        request_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        description:
+          type: string
+        change_type:
+          type: string
+          enum: [feature, bugfix, enhancement, infrastructure]
+        priority:
+          type: string
+          enum: [high, medium, low]
+        status:
+          type: string
+          enum: [pending, approved, rejected, in_progress, completed]
+        requester:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        reviewed_at:
+          type: string
+          format: date-time
+        impact_analysis:
+          type: object
+        risk_assessment:
+          type: object
+
+    Error:
+      type: object
+      properties:
+        error_code:
+          type: string
+        message:
+          type: string
+        details:
+          type: object
+        timestamp:
+          type: string
+          format: date-time
+        request_id:
+          type: string
+          format: uuid
+
+tags:
+  - name: QA Bot
+    description: 衛教機器人相關功能
+  - name: Conversation
+    description: 對話記錄管理
+  - name: Report
+    description: 報告生成與管理
+  - name: KPI
+    description: KPI 追蹤與風險管理
+  - name: Change Control
+    description: 變更控制流程
+  - name: System
+    description: 系統管理功能

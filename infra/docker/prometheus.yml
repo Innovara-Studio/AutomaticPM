@@ -1,0 +1,94 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  # - "first_rules.yml"
+  # - "second_rules.yml"
+
+scrape_configs:
+  # Prometheus 自身監控
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # PM-AI API 服務監控
+  - job_name: 'pm-ai-api'
+    static_configs:
+      - targets: ['api:8000']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+    scrape_timeout: 10s
+
+  # PM-AI Web 前端監控
+  - job_name: 'pm-ai-web'
+    static_configs:
+      - targets: ['web:3000']
+    metrics_path: '/api/metrics'
+    scrape_interval: 30s
+
+  # LLM Gateway 監控
+  - job_name: 'pm-ai-llm-gateway'
+    static_configs:
+      - targets: ['llm-gateway:8001']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+  # RAG Indexer 監控
+  - job_name: 'pm-ai-rag-indexer'
+    static_configs:
+      - targets: ['rag-indexer:8002']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+  # KPI Daemon 監控
+  - job_name: 'pm-ai-kpi-daemon'
+    static_configs:
+      - targets: ['kpi-daemon:8003']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+  # PostgreSQL 資料庫監控
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['db:5432']
+    scrape_interval: 30s
+
+  # Redis 監控
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis:6379']
+    scrape_interval: 30s
+
+  # Qdrant 向量資料庫監控
+  - job_name: 'qdrant'
+    static_configs:
+      - targets: ['vectordb:6333']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+  # MinIO 物件儲存監控
+  - job_name: 'minio'
+    static_configs:
+      - targets: ['minio:9000']
+    metrics_path: '/minio/v2/metrics/cluster'
+    scrape_interval: 30s
+
+  # Nginx 監控
+  - job_name: 'nginx'
+    static_configs:
+      - targets: ['nginx:80']
+    metrics_path: '/nginx_status'
+    scrape_interval: 30s
+
+  # Node Exporter 系統監控
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+    scrape_interval: 30s
+
+  # cAdvisor 容器監控
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['cadvisor:8080']
+    scrape_interval: 30s
